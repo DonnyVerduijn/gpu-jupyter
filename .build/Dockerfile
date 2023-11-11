@@ -7,7 +7,7 @@
 
 # Use NVIDIA CUDA as base image and run the same installation as in the other packages.
 # The version of cuda must match those of the packages installed in src/Dockerfile.gpulibs
-FROM nvidia/cuda:11.6.2-cudnn8-runtime-ubuntu20.04
+FROM mcr.microsoft.com/devcontainers/base:ubuntu-20.04
 LABEL authors="Christoph Schranz <christoph.schranz@salzburgresearch.at>, Mathematical Michael <consistentbayes@gmail.com>"
 # This is a concatenated Dockerfile, the maintainers of subsequent sections may vary.
 RUN chmod 1777 /tmp && chmod 1777 /var/tmp
@@ -29,7 +29,7 @@ ARG ROOT_CONTAINER=ubuntu:focal
 
 
 LABEL maintainer="Jupyter Project <jupyter@googlegroups.com>"
-ARG NB_USER="jovyan"
+ARG NB_USER="vscode"
 ARG NB_UID="1000"
 ARG NB_GID="100"
 
@@ -42,32 +42,35 @@ USER root
 # Install all OS dependencies for notebook server that starts but lacks all
 # features (e.g., download as all possible file formats)
 ENV DEBIAN_FRONTEND noninteractive
-RUN apt-get update --yes && \
-    # - apt-get upgrade is run to patch known vulnerabilities in apt-get packages as
-    #   the ubuntu base image is rebuilt too seldom sometimes (less than once a month)
-    apt-get upgrade --yes && \
-    apt-get install --yes --no-install-recommends \
-    # - bzip2 is necessary to extract the micromamba executable.
-    bzip2 \
-    ca-certificates \
-    fonts-liberation \
-    locales \
-    # - pandoc is used to convert notebooks to html files
-    #   it's not present in arm64 ubuntu image, so we install it here
-    pandoc \
-    # - run-one - a wrapper script that runs no more
-    #   than one unique  instance  of  some  command with a unique set of arguments,
-    #   we use `run-one-constantly` to support `RESTARTABLE` option
-    run-one \
-    sudo \
-    # - tini is installed as a helpful container entrypoint that reaps zombie
-    #   processes and such of the actual executable we want to start, see
-    #   https://github.com/krallin/tini#why-tini for details.
-    tini \
-    wget && \
-    apt-get clean && rm -rf /var/lib/apt/lists/* && \
-    echo "en_US.UTF-8 UTF-8" > /etc/locale.gen && \
-    locale-gen
+# RUN apt-get update --yes && \
+#     # - apt-get upgrade is run to patch known vulnerabilities in apt-get packages as
+#     #   the ubuntu base image is rebuilt too seldom sometimes (less than once a month)
+#     apt-get upgrade --yes && \
+#     apt-get install --yes --no-install-recommends \
+#     # - bzip2 is necessary to extract the micromamba executable.
+#     bzip2 \
+#     ca-certificates \
+#     fonts-liberation \
+#     locales \
+#     # - pandoc is used to convert notebooks to html files
+#     #   it's not present in arm64 ubuntu image, so we install it here
+#     pandoc \
+#     # - run-one - a wrapper script that runs no more
+#     #   than one unique  instance  of  some  command with a unique set of arguments,
+#     #   we use `run-one-constantly` to support `RESTARTABLE` option
+#     run-one \
+#     sudo \
+#     # - tini is installed as a helpful container entrypoint that reaps zombie
+#     #   processes and such of the actual executable we want to start, see
+#     #   https://github.com/krallin/tini#why-tini for details.
+#     tini \
+#     wget && \
+#     apt-get clean && rm -rf /var/lib/apt/lists/* && \
+#     echo "en_US.UTF-8 UTF-8" > /etc/locale.gen && \
+#     locale-gen
+
+# Pin python version here, or set it to "default"
+ARG PYTHON_VERSION=3.10
 
 # Configure environment
 ENV CONDA_DIR=/opt/conda \
@@ -79,7 +82,9 @@ ENV CONDA_DIR=/opt/conda \
     LANG=en_US.UTF-8 \
     LANGUAGE=en_US.UTF-8
 ENV PATH="${CONDA_DIR}/bin:${PATH}" \
-    HOME="/home/${NB_USER}"
+    HOME="/home/${NB_USER}" \
+    LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/opt/conda/lib:/opt/conda/lib/python${PYTHON_VERSION}/site-packages/tensorrt:/opt/conda/lib/python${PYTHON_VERSION}/site-packages/nvidia/cuda_cupti/lib"
+
 
 # Copy a script that we will use to correct permissions after running certain commands
 COPY fix-permissions /usr/local/bin/fix-permissions
@@ -96,7 +101,7 @@ RUN sed -i 's/^#force_color_prompt=yes/force_color_prompt=yes/' /etc/skel/.bashr
 RUN echo "auth requisite pam_deny.so" >> /etc/pam.d/su && \
     sed -i.bak -e 's/^%admin/#%admin/' /etc/sudoers && \
     sed -i.bak -e 's/^%sudo/#%sudo/' /etc/sudoers && \
-    useradd -l -m -s /bin/bash -N -u "${NB_UID}" "${NB_USER}" && \
+    # useradd -l -m -s /bin/bash -N -u "${NB_UID}" "${NB_USER}" && \
     mkdir -p "${CONDA_DIR}" && \
     chown "${NB_USER}:${NB_GID}" "${CONDA_DIR}" && \
     chmod g+w /etc/passwd && \
@@ -105,12 +110,10 @@ RUN echo "auth requisite pam_deny.so" >> /etc/pam.d/su && \
 
 USER ${NB_UID}
 
-# Pin python version here, or set it to "default"
-ARG PYTHON_VERSION=3.10
 
 # Setup work directory for backward-compatibility
-RUN mkdir "/home/${NB_USER}/work" && \
-    fix-permissions "/home/${NB_USER}"
+# RUN mkdir "/home/${NB_USER}/work" && \
+#     fix-permissions "/home/${NB_USER}"
 
 # Download and install Micromamba, and initialize Conda prefix.
 #   <https://github.com/mamba-org/mamba#micromamba>
@@ -125,6 +128,7 @@ RUN mkdir "/home/${NB_USER}/work" && \
 # files across image layers when the permissions change
 COPY --chown="${NB_UID}:${NB_GID}" initial-condarc "${CONDA_DIR}/.condarc"
 WORKDIR /tmp
+
 RUN set -x && \
     arch=$(uname -m) && \
     if [ "${arch}" = "x86_64" ]; then \
@@ -144,45 +148,67 @@ RUN set -x && \
         --yes \
         "${PYTHON_SPECIFIER}" \
         'mamba' \
-        'notebook' \
-        'jupyterhub' \
-        'jupyterlab' && \
+        'jupyter' \
+        'altair' \
+        'beautifulsoup4' \
+        'bokeh' \
+        'bottleneck' \
+        'cloudpickle' \
+        'cython' \
+        'dask' \
+        'dill' \
+        'h5py' \
+        'ipympl'\
+        'ipywidgets' \
+        'matplotlib-base' \
+        'numba' \
+        'numexpr' \
+        'pandas' \
+        'patsy' \
+        'protobuf' \
+        'pytables' \
+        'scikit-image' \
+        'scikit-learn' \
+        'scipy' \
+        'seaborn' \
+        'sqlalchemy' \
+        'statsmodels' \
+        'sympy' \
+        'widgetsnbextension'\
+        'xlrd' && \
+        # 'jupyterhub' \
+        # 'jupyterlab' && \
     rm micromamba && \
     # Pin major.minor version of python
     mamba list python | grep '^python ' | tr -s ' ' | cut -d ' ' -f 1,2 >> "${CONDA_DIR}/conda-meta/pinned" && \
-    jupyter notebook --generate-config && \
+    # jupyter notebook --generate-config && \
     mamba clean --all -f -y && \
-    npm cache clean --force && \
-    jupyter lab clean && \
+    # npm cache clean --force && \
+    # jupyter lab clean && \
     rm -rf "/home/${NB_USER}/.cache/yarn" && \
     fix-permissions "${CONDA_DIR}" && \
     fix-permissions "/home/${NB_USER}"
 
-EXPOSE 8888
+# EXPOSE 8888
 
 # Configure container startup
 ENTRYPOINT ["tini", "-g", "--"]
-CMD ["start-notebook.sh"]
-
-# Copy local files as late as possible to avoid cache busting
-COPY start.sh start-notebook.sh start-singleuser.sh /usr/local/bin/
-# Currently need to have both jupyter_notebook_config and jupyter_server_config to support classic and lab
-COPY jupyter_server_config.py /etc/jupyter/
+# CMD ["start-notebook.sh"]
 
 # Fix permissions on /etc/jupyter as root
 USER root
 
 # Legacy for Jupyter Notebook Server, see: [#1205](https://github.com/jupyter/docker-stacks/issues/1205)
-RUN sed -re "s/c.ServerApp/c.NotebookApp/g" \
-    /etc/jupyter/jupyter_server_config.py > /etc/jupyter/jupyter_notebook_config.py && \
-    fix-permissions /etc/jupyter/
+# RUN sed -re "s/c.ServerApp/c.NotebookApp/g" \
+#     /etc/jupyter/jupyter_server_config.py > /etc/jupyter/jupyter_notebook_config.py && \
+#     fix-permissions /etc/jupyter/
 
 # HEALTHCHECK documentation: https://docs.docker.com/engine/reference/builder/#healthcheck
 # This healtcheck works well for `lab`, `notebook`, `nbclassic`, `server` and `retro` jupyter commands
 # https://github.com/jupyter/docker-stacks/issues/915#issuecomment-1068528799
-HEALTHCHECK  --interval=15s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget -O- --no-verbose --tries=1 --no-check-certificate \
-    http${GEN_CERT:+s}://localhost:8888${JUPYTERHUB_SERVICE_PREFIX:-/}api || exit 1
+# HEALTHCHECK  --interval=15s --timeout=3s --start-period=5s --retries=3 \
+#     CMD wget -O- --no-verbose --tries=1 --no-check-certificate \
+#     http${GEN_CERT:+s}://localhost:8888${JUPYTERHUB_SERVICE_PREFIX:-/}api || exit 1
 
 # Switch back to jovyan to avoid accidental container runs as root
 USER ${NB_UID}
@@ -225,11 +251,15 @@ RUN apt-get update --yes && \
     # https://nbconvert.readthedocs.io/en/latest/install.html#installing-tex
     texlive-xetex \
     texlive-fonts-recommended \
-    texlive-plain-generic && \
+    texlive-plain-generic \
+    # x11
+    xvfb \
+    x11-apps \
+    libxext-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Create alternative for nano -> nano-tiny
-RUN update-alternatives --install /usr/bin/nano nano /bin/nano-tiny 10
+# RUN update-alternatives --install /usr/bin/nano nano /bin/nano-tiny 10
 
 # Switch back to jovyan to avoid accidental container runs as root
 USER ${NB_UID}
@@ -263,47 +293,14 @@ RUN apt-get update --yes && \
 
 USER ${NB_UID}
 
-# Install Python 3 packages
-RUN mamba install --quiet --yes \
-    'altair' \
-    'beautifulsoup4' \
-    'bokeh' \
-    'bottleneck' \
-    'cloudpickle' \
-    'conda-forge::blas=*=openblas' \
-    'cython' \
-    'dask' \
-    'dill' \
-    'h5py' \
-    'ipympl'\
-    'ipywidgets' \
-    'matplotlib-base' \
-    'numba' \
-    'numexpr' \
-    'pandas' \
-    'patsy' \
-    'protobuf' \
-    'pytables' \
-    'scikit-image' \
-    'scikit-learn' \
-    'scipy' \
-    'seaborn' \
-    'sqlalchemy' \
-    'statsmodels' \
-    'sympy' \
-    'widgetsnbextension'\
-    'xlrd' && \
-    mamba clean --all -f -y && \
-    fix-permissions "${CONDA_DIR}" && \
-    fix-permissions "/home/${NB_USER}"
 
 # Install facets which does not have a pip or conda package at the moment
 WORKDIR /tmp
-RUN git clone https://github.com/PAIR-code/facets.git && \
-    jupyter nbextension install facets/facets-dist/ --sys-prefix && \
-    rm -rf /tmp/facets && \
-    fix-permissions "${CONDA_DIR}" && \
-    fix-permissions "/home/${NB_USER}"
+# RUN git clone https://github.com/PAIR-code/facets.git && \
+#     jupyter nbextension install facets/facets-dist/ --sys-prefix && \
+#     rm -rf /tmp/facets && \
+#     fix-permissions "${CONDA_DIR}" && \
+#     fix-permissions "/home/${NB_USER}"
 
 # Import matplotlib the first time to build the font cache.
 ENV XDG_CACHE_HOME="/home/${NB_USER}/.cache/"
@@ -325,103 +322,47 @@ LABEL maintainer="Christoph Schranz <christoph.schranz@salzburgresearch.at>, Mat
 # https://www.tensorflow.org/install/source#gpu
 # installation via conda leads to errors in version 4.8.2
 USER ${NB_UID}
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir tensorflow==2.10.1 keras==2.10 && \
-    fix-permissions "${CONDA_DIR}" && \
-    fix-permissions "/home/${NB_USER}"
+# RUN pip install \
+#     tensorflow[and-cuda] && \
+#     mamba clean --all -y
+    # fix-permissions "${CONDA_DIR}" && \
+    # fix-permissions "/home/${NB_USER}"
+
+RUN pip install \
+    tensorflow[and-cuda]==2.14 \
+    tensorboard_plugin_profile \
+    tensorboard_plugin_wit \
+    tensorflow_addons \
+    types-tensorflow \
+    --no-cache-dir
+    # --extra-index-url https://pypi.nvidia.com tensorrt_libs
 
 # Install PyTorch with dependencies
-RUN conda install --quiet --yes \
-    pyyaml mkl mkl-include setuptools cmake cffi typing && \
-    conda clean --all -f -y && \
-    fix-permissions "${CONDA_DIR}" && \
-    fix-permissions "/home/${NB_USER}"
-
 # Check compatibility here:
 # https://pytorch.org/get-started/locally/
 # Installation via conda leads to errors installing cudatoolkit=11.1
 # RUN pip install --no-cache-dir torch==1.13.1 torchvision==0.14.1 torchaudio==0.13.1  && \
 #     torchviz==0.0.2 --extra-index-url https://download.pytorch.org/whl/cu116
-RUN set -ex \
- && buildDeps=' \
-    torch==1.13.1 \
-    torchvision==0.14.1 \
-    torchaudio==0.13.1 \
-    torchviz==0.0.2 \
-' \
- && pip install --no-cache-dir $buildDeps --extra-index-url https://download.pytorch.org/whl/cu116 \
- && fix-permissions "${CONDA_DIR}" \
- && fix-permissions "/home/${NB_USER}"
+RUN pip install \
+    torch \
+    torchvision \
+    torchaudio \
+    torchviz \
+    gymnasium[classic-control] \
+    --no-cache-dir \
+    --extra-index-url https://download.pytorch.org/whl/cu118
+#  && fix-permissions "${CONDA_DIR}" \
+#  && fix-permissions "/home/${NB_USER}"
 
 USER root
 ENV CUDA_PATH=/opt/conda/
 
 # Install nvtop to monitor the gpu tasks
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends cmake libncurses5-dev libncursesw5-dev git && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# reinstall nvcc with cuda-nvcc to install ptax
-USER $NB_UID
-RUN conda install -c nvidia cuda-nvcc -y && \
-    conda clean --all -f -y && \
-    fix-permissions $CONDA_DIR && \
-    fix-permissions /home/$NB_USER
+# RUN apt-get update && \
+#     apt-get install -y --no-install-recommends cmake libncurses5-dev libncursesw5-dev git && \
+#     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 USER root
-RUN ln -s /opt/conda/bin/ptxas /usr/bin/ptxas
+RUN ln -s /opt/conda/lib/python${PYTHON_VERSION}/site-packages/nvidia/cuda_nvcc/bin/ptxas /usr/bin/ptxas
 
-USER $NB_UID
-
-  ############################################################################
-  ############################ Useful packages ###############################
-  ############################################################################
-  
-LABEL authors="Christoph Schranz <christoph.schranz@salzburgresearch.at>, Mathematical Michael <consistentbayes@gmail.com>"
-
-USER root
-
-# Install useful packages and Graphviz
-RUN apt-get update \
- && apt-get -y install --no-install-recommends htop apt-utils iputils-ping graphviz libgraphviz-dev openssh-client \
- && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-USER $NB_UID
-RUN set -ex \
- && buildDeps=' \
-    graphviz==0.19.1 \
-    pytest==7.2.2 \
-' \
- && pip install --no-cache-dir $buildDeps \
- && fix-permissions "${CONDA_DIR}" \
- && fix-permissions "/home/${NB_USER}"
-
-# upgrade jupyter-server for compatibility
-RUN pip install --no-cache-dir --upgrade \
-    distributed==2023.3.0 \
-    jupyter-server==2.4 \
-    # fix permissions of conda
- && fix-permissions "${CONDA_DIR}" \
- && fix-permissions "/home/${NB_USER}"
-
-RUN pip install --no-cache-dir \
-    # install extension manager
-    jupyter_contrib_nbextensions==0.7.0 \
-    jupyter_nbextensions_configurator==0.6.1 \
-    # install git extension
-    jupyterlab-git==0.41.0 \
-    # install plotly extension
-    plotly==5.13.1 \
-    # install drawio and graphical extensions
-    jupyterlab-drawio==0.9.0 \
-    rise==5.7.1 \
-    ipyleaflet==0.17.2 \
-    ipywidgets==8.0.4 \
-    # install spell checker
-    jupyterlab-spellchecker==0.7.3 && \
-    # fix permissions of conda
-    fix-permissions "${CONDA_DIR}" && \
-    fix-permissions "/home/${NB_USER}"
-
-# Switch back to jovyan to avoid accidental container runs as root
 USER $NB_UID
